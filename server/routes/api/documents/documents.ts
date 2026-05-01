@@ -5,6 +5,7 @@ import invariant from "invariant";
 import contentDisposition from "content-disposition";
 import JSZip from "jszip";
 import Router from "koa-router";
+import type { Response } from "node-fetch";
 import escapeRegExp from "lodash/escapeRegExp";
 import has from "lodash/has";
 import remove from "lodash/remove";
@@ -103,14 +104,81 @@ import {
 const router = new Router();
 
 const OpenAIChatCompletionSchema = z.object({
+  output_text: z.string().optional(),
   choices: z
     .object({
-      message: z.object({
-        content: z.string().nullable(),
-      }),
+      message: z
+        .object({
+          content: z.string().nullable().optional(),
+        })
+        .optional(),
+      delta: z
+        .object({
+          content: z.string().nullable().optional(),
+        })
+        .optional(),
+      text: z.string().optional(),
     })
-    .array(),
+    .array()
+    .optional(),
 });
+
+const extractAIContent = (payload: unknown) => {
+  const parsed = OpenAIChatCompletionSchema.safeParse(payload);
+
+  if (!parsed.success) {
+    return;
+  }
+
+  if (parsed.data.output_text?.trim()) {
+    return parsed.data.output_text.trim();
+  }
+
+  const content = parsed.data.choices
+    ?.map(
+      (choice) =>
+        choice.message?.content ?? choice.delta?.content ?? choice.text ?? ""
+    )
+    .join("")
+    .trim();
+
+  return content || undefined;
+};
+
+const parseAIResponse = async (response: Response) => {
+  const text = await response.text();
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return;
+  }
+
+  if (trimmed.startsWith("data:")) {
+    const content = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .filter((line) => line && line !== "[DONE]")
+      .map((line) => {
+        try {
+          return extractAIContent(JSON.parse(line)) ?? "";
+        } catch (_err) {
+          return "";
+        }
+      })
+      .join("")
+      .trim();
+
+    return content || undefined;
+  }
+
+  try {
+    return extractAIContent(JSON.parse(trimmed));
+  } catch (_err) {
+    return;
+  }
+};
 
 const stripSearchContext = (context?: string) =>
   context
@@ -1367,6 +1435,7 @@ router.post(
         },
         body: JSON.stringify({
           model: env.AI_OPENAI_MODEL,
+          stream: false,
           temperature: 0.2,
           messages: [
             {
@@ -1383,17 +1452,16 @@ router.post(
     );
 
     if (!aiResponse.ok) {
+      const responseText = await aiResponse.text();
       Logger.warn("AI answers request failed", {
         status: aiResponse.status,
         statusText: aiResponse.statusText,
+        response: responseText.slice(0, 500),
       });
       throw InvalidRequestError("AI answers request failed");
     }
 
-    const parsed = OpenAIChatCompletionSchema.safeParse(await aiResponse.json());
-    const answer = parsed.success
-      ? parsed.data.choices[0]?.message.content?.trim()
-      : undefined;
+    const answer = await parseAIResponse(aiResponse);
 
     if (!answer) {
       throw InvalidRequestError("AI answers response was invalid");
@@ -1470,6 +1538,7 @@ router.post(
         },
         body: JSON.stringify({
           model: env.AI_OPENAI_MODEL,
+          stream: false,
           temperature: 0.2,
           messages: [
             {
@@ -1494,17 +1563,16 @@ router.post(
     );
 
     if (!aiResponse.ok) {
+      const responseText = await aiResponse.text();
       Logger.warn("Document AI chat request failed", {
         status: aiResponse.status,
         statusText: aiResponse.statusText,
+        response: responseText.slice(0, 500),
       });
       throw InvalidRequestError("AI answers request failed");
     }
 
-    const parsed = OpenAIChatCompletionSchema.safeParse(await aiResponse.json());
-    const answer = parsed.success
-      ? parsed.data.choices[0]?.message.content?.trim()
-      : undefined;
+    const answer = await parseAIResponse(aiResponse);
 
     if (!answer) {
       throw InvalidRequestError("AI answers response was invalid");
