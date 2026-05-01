@@ -39,10 +39,16 @@ export type SearchParams = {
   dateFilter?: DateFilter;
   statusFilter?: StatusFilter[];
   collectionId?: string;
+  documentId?: string;
   userId?: string;
   shareId?: string;
   sort?: SortFilter;
   direction?: DirectionFilter;
+};
+
+export type SearchAnswer = {
+  answer: string;
+  citations: SearchResult[];
 };
 
 type ImportOptions = {
@@ -461,6 +467,42 @@ export default class DocumentsStore extends Store<Document> {
       })
     );
     return results;
+  };
+
+  @action
+  answer = async (options: SearchParams): Promise<SearchAnswer> => {
+    const compactedOptions = omitBy(options, (o) => !o);
+    const res = await client.post("/documents.answer", {
+      ...compactedOptions,
+    });
+    invariant(res?.data, "Answer response should be available");
+
+    runInAction("DocumentsStore#answer", () => {
+      res.data.citations.forEach((result: SearchResult) =>
+        this.add(result.document)
+      );
+      this.addPolicies(res.policies);
+    });
+
+    const citations: SearchResult[] = compact(
+      res.data.citations.map((result: SearchResult) => {
+        const document = this.data.get(result.document.id);
+        if (!document) {
+          return null;
+        }
+        return {
+          id: document.id,
+          ranking: result.ranking,
+          context: result.context,
+          document,
+        };
+      })
+    );
+
+    return {
+      answer: res.data.answer,
+      citations,
+    };
   };
 
   @action

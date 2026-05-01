@@ -8,13 +8,13 @@ import Flex from "~/components/Flex";
 import env from "~/env";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import useStores from "~/hooks/useStores";
-import { detectLanguage } from "~/utils/language";
+import { changeLanguage, detectLanguage } from "~/utils/language";
 import { LanguageIcon } from "./Icons/LanguageIcon";
 import Text from "./Text";
 
 export default function LanguagePrompt() {
   const { ui } = useStores();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const user = useCurrentUser();
   const language = detectLanguage();
 
@@ -48,6 +48,7 @@ export default function LanguagePrompt() {
             onClick={async () => {
               ui.set({ languagePromptDismissed: true });
               await user.save({ language });
+              await changeLanguage(language, i18n);
             }}
           >
             {t("Change Language")}

@@ -3,11 +3,17 @@ import { v4 as uuidv4 } from "uuid";
 import queryString from "query-string";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useHistory, useLocation, useRouteMatch } from "react-router-dom";
+import {
+  Link,
+  useHistory,
+  useLocation,
+  useRouteMatch,
+} from "react-router-dom";
 import { Waypoint } from "react-waypoint";
 import styled from "styled-components";
 import breakpoint from "styled-components-breakpoint";
 import { Pagination } from "@shared/constants";
+import { s } from "@shared/styles";
 import type {
   SortFilter as TSortFilter,
   DirectionFilter as TDirectionFilter,
@@ -15,6 +21,7 @@ import type {
 } from "@shared/types";
 import { StatusFilter as TStatusFilter } from "@shared/types";
 import ArrowKeyNavigation from "~/components/ArrowKeyNavigation";
+import Button from "~/components/Button";
 import DocumentListItem from "~/components/DocumentListItem";
 import Fade from "~/components/Fade";
 import Flex from "~/components/Flex";
@@ -27,9 +34,10 @@ import env from "~/env";
 import usePaginatedRequest from "~/hooks/usePaginatedRequest";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
+import type { SearchAnswer } from "~/stores/DocumentsStore";
 import type { PaginationParams, SearchResult } from "~/types";
 import { preventDefault } from "~/utils/events";
-import { searchPath } from "~/utils/routeHelpers";
+import { documentPath, searchPath } from "~/utils/routeHelpers";
 import { decodeURIComponentSafe } from "~/utils/urls";
 import CollectionFilter from "./components/CollectionFilter";
 import DateFilter from "./components/DateFilter";
@@ -58,6 +66,9 @@ function Search() {
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
   const resultListRef = React.useRef<HTMLDivElement | null>(null);
   const recentSearchesRef = React.useRef<HTMLDivElement | null>(null);
+  const [answer, setAnswer] = React.useState<SearchAnswer>();
+  const [answerLoading, setAnswerLoading] = React.useState(false);
+  const [answerError, setAnswerError] = React.useState<string>();
 
   // filters
   const decodedQuery = decodeURIComponentSafe(
@@ -143,6 +154,11 @@ function Search() {
   const { data, next, end, error, loading } = usePaginatedRequest(requestFn, {
     limit: Pagination.defaultLimit,
   });
+
+  React.useEffect(() => {
+    setAnswer(undefined);
+    setAnswerError(undefined);
+  }, [filters]);
 
   const updateLocation = (query: string) => {
     // If query came from route params, navigate to base search path
@@ -235,6 +251,22 @@ function Search() {
   };
 
   const handleEscape = () => searchInputRef.current?.focus();
+  const handleAnswer = async () => {
+    if (!query) {
+      return;
+    }
+
+    setAnswerLoading(true);
+    setAnswerError(undefined);
+
+    try {
+      setAnswer(await documents.answer({ ...filters, limit: 8 }));
+    } catch (_err) {
+      setAnswerError(t("Could not generate an AI answer."));
+    } finally {
+      setAnswerLoading(false);
+    }
+  };
   const showEmpty = !loading && query && data?.length === 0;
 
   const sortInput = filterVisibility.sort ? (
@@ -345,6 +377,50 @@ function Search() {
                 </Centered>
               </Fade>
             ) : null}
+            {query && !titleFilter ? (
+              <AnswerCard>
+                <AnswerHeader align="center" justify="space-between" gap={8}>
+                  <Text as="h2" size="large">
+                    {t("AI answer")}
+                  </Text>
+                  <Button
+                    neutral
+                    onClick={handleAnswer}
+                    disabled={answerLoading}
+                  >
+                    {answerLoading
+                      ? t("Generating…")
+                      : answer
+                        ? t("Regenerate")
+                        : t("Generate answer")}
+                  </Button>
+                </AnswerHeader>
+                {answerError ? (
+                  <Text as="p" type="secondary">
+                    {answerError}
+                  </Text>
+                ) : answer ? (
+                  <>
+                    <AnswerText>{answer.answer}</AnswerText>
+                    {answer.citations.length ? (
+                      <CitationList>
+                        {answer.citations.map((citation, index) => (
+                          <li key={citation.document.id}>
+                            <Link to={documentPath(citation.document)}>
+                              [{index + 1}] {citation.document.title}
+                            </Link>
+                          </li>
+                        ))}
+                      </CitationList>
+                    ) : null}
+                  </>
+                ) : (
+                  <Text as="p" type="secondary">
+                    {t("Generate an answer from matching documents.")}
+                  </Text>
+                )}
+              </AnswerCard>
+            ) : null}
             <ResultList column>
               <StyledArrowKeyNavigation
                 ref={resultListRef}
@@ -396,6 +472,37 @@ const ResultsWrapper = styled(Flex)`
 
 const ResultList = styled(Flex)`
   margin-bottom: 150px;
+`;
+
+const AnswerCard = styled.section`
+  border: 1px solid ${s("divider")};
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: ${s("sidebarBackground")};
+`;
+
+const AnswerHeader = styled(Flex)`
+  margin-bottom: 8px;
+
+  h2 {
+    margin: 0;
+  }
+`;
+
+const AnswerText = styled(Text).attrs({ as: "p" })`
+  white-space: pre-wrap;
+  margin-bottom: 12px;
+`;
+
+const CitationList = styled.ol`
+  margin: 0;
+  padding-inline-start: 20px;
+  color: ${s("textSecondary")};
+
+  a {
+    color: ${s("textSecondary")};
+  }
 `;
 
 const StyledArrowKeyNavigation = styled(ArrowKeyNavigation)`

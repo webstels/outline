@@ -211,6 +211,45 @@ export const DocumentsSearchSchema = BaseSchema.extend({
 
 export type DocumentsSearchReq = z.infer<typeof DocumentsSearchSchema>;
 
+export const DocumentsAnswerSchema = BaseSchema.extend({
+  body: BaseSearchSchema.extend({
+    /** Query to answer from search results */
+    query: z.string().refine((val) => val.trim() !== ""),
+
+    /** Specifies the attributes by which search results will be sorted */
+    sort: z.enum(Object.values(SortFilter) as [string, ...string[]]).optional(),
+
+    /** Specifies the sort order with respect to sort field */
+    direction: z
+      .enum(Object.values(DirectionFilter) as [string, ...string[]])
+      .optional(),
+  }),
+});
+
+export type DocumentsAnswerReq = z.infer<typeof DocumentsAnswerSchema>;
+
+export const DocumentsAskSchema = BaseSchema.extend({
+  body: z.object({
+    /** Id of the document to ask about */
+    id: zodIdType(),
+
+    /** Question to answer from the document */
+    query: z.string().refine((val) => val.trim() !== ""),
+
+    /** Prior chat messages to preserve conversational context */
+    history: z
+      .object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string(),
+      })
+      .array()
+      .max(10)
+      .optional(),
+  }),
+});
+
+export type DocumentsAskReq = z.infer<typeof DocumentsAskSchema>;
+
 export const DocumentsSearchTitlesSchema = BaseSchema.extend({
   body: BaseSearchSchema.extend({
     /** Query for search */

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { formatRFC7231 } from "date-fns";
 import Koa from "koa";
@@ -22,6 +23,24 @@ import errors from "./errors";
 
 const koa = new Koa();
 const router = new Router();
+
+const builtLocalesRoot = path.join(__dirname, "../../shared/i18n/locales");
+const sourceLocalesRoot = path.resolve(
+  __dirname,
+  "../../../shared/i18n/locales"
+);
+
+const getLocalesRoot = (lng: string) => {
+  const builtTranslationPath = path.join(
+    builtLocalesRoot,
+    lng,
+    "translation.json"
+  );
+
+  return fs.existsSync(builtTranslationPath)
+    ? builtLocalesRoot
+    : sourceLocalesRoot;
+};
 
 // serve public assets
 router.use(["/images/*", "/email/*", "/fonts/*"], async (ctx, next) => {
@@ -108,7 +127,7 @@ router.get("/locales/:lng.json", async (ctx) => {
       );
       res.setHeader("Access-Control-Allow-Origin", "*");
     },
-    root: path.join(__dirname, "../../shared/i18n/locales"),
+    root: getLocalesRoot(lng),
   });
 });
 

@@ -818,6 +818,35 @@ export class Environment {
     this.toOptionalString(environment.SEARCH_PROVIDER) ?? "postgres";
 
   /**
+   * OpenAI-compatible API key used for AI answers in search.
+   */
+  @IsOptional()
+  public AI_OPENAI_API_KEY = this.toOptionalString(
+    environment.AI_OPENAI_API_KEY
+  );
+
+  /**
+   * OpenAI-compatible API base URL used for AI answers in search.
+   */
+  @IsOptional()
+  @IsUrl({
+    protocols: ["http", "https"],
+    require_protocol: true,
+    require_tld: false,
+  })
+  public AI_OPENAI_API_URL = (
+    this.toOptionalString(environment.AI_OPENAI_API_URL) ??
+    "https://api.openai.com/v1"
+  ).replace(/\/$/, "");
+
+  /**
+   * OpenAI-compatible chat model used for AI answers in search.
+   */
+  @IsOptional()
+  public AI_OPENAI_MODEL =
+    this.toOptionalString(environment.AI_OPENAI_MODEL) ?? "gpt-4o-mini";
+
+  /**
    * The product name
    */
   @Public

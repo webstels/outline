@@ -10,6 +10,7 @@ import has from "lodash/has";
 import remove from "lodash/remove";
 import uniq from "lodash/uniq";
 import mime from "mime-types";
+import { z } from "zod";
 import type { Order, ScopeOptions, WhereOptions } from "sequelize";
 import { Op, Sequelize } from "sequelize";
 import { randomUUID } from "node:crypto";
@@ -89,6 +90,7 @@ import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import ZipHelper from "@server/utils/ZipHelper";
 import { convertBareUrlsToEmbedMarkdown } from "@server/utils/embeds";
+import fetch from "@server/utils/fetch";
 import { getTeamFromContext } from "@server/utils/passport";
 import { assertPresent } from "@server/validation";
 import pagination, { paginateQuery } from "../middlewares/pagination";
@@ -99,6 +101,42 @@ import {
 } from "@server/commands/shareLoader";
 
 const router = new Router();
+
+const OpenAIChatCompletionSchema = z.object({
+  choices: z
+    .object({
+      message: z.object({
+        content: z.string().nullable(),
+      }),
+    })
+    .array(),
+});
+
+const stripSearchContext = (context?: string) =>
+  context
+    ?.replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const languageNameForAnswer = (language: string | null | undefined) => {
+  switch (language) {
+    case "ru_RU":
+      return "Russian";
+    case "en_GB":
+    case "en_US":
+      return "English";
+    default:
+      return language?.replace("_", "-") ?? "the user's language";
+  }
+};
+
+const noAnswerMessage = (language: string | null | undefined) => {
+  if (language === "ru_RU") {
+    return "Не найдено подходящих документов для ответа на этот вопрос.";
+  }
+
+  return "No matching documents were found to answer this question.";
+};
 
 router.post(
   "documents.list",
@@ -1230,6 +1268,252 @@ router.post(
       pagination: { ...ctx.state.pagination, total },
       data,
       policies: user ? presentPolicies(user, documents) : null,
+    };
+  }
+);
+
+router.post(
+  "documents.answer",
+  auth(),
+  pagination(),
+  rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
+  validate(T.DocumentsAnswerSchema),
+  async (ctx: APIContext<T.DocumentsAnswerReq>) => {
+    if (!env.AI_OPENAI_API_KEY) {
+      throw InvalidRequestError("AI answers are not configured");
+    }
+
+    const {
+      query,
+      collectionId,
+      documentId,
+      userId,
+      dateFilter,
+      statusFilter = [],
+      snippetMinWords,
+      snippetMaxWords,
+      sort,
+      direction,
+    } = ctx.input.body;
+    const { offset, limit } = ctx.state.pagination;
+    const { user } = ctx.state.auth;
+
+    if (collectionId) {
+      const collection = await Collection.findByPk(collectionId, {
+        userId: user.id,
+      });
+      authorize(user, "readDocument", collection);
+    }
+
+    let documentIds = undefined;
+    if (documentId) {
+      const document = await Document.findByPk(documentId, {
+        userId: user.id,
+      });
+      authorize(user, "read", document);
+      documentIds = [documentId, ...(await document.findAllChildDocumentIds())];
+    }
+
+    const response = await SearchProviderManager.getProvider().searchForUser(
+      user,
+      {
+        query,
+        collaboratorIds: userId ? [userId] : undefined,
+        collectionId,
+        documentIds,
+        dateFilter,
+        statusFilter,
+        offset,
+        limit: Math.min(limit, 8),
+        snippetMinWords,
+        snippetMaxWords,
+        sort: sort as SortFilter,
+        direction: direction as DirectionFilter,
+      }
+    );
+
+    const answerResults = response.results.slice(0, 6);
+
+    if (answerResults.length === 0) {
+      ctx.body = {
+        data: {
+          answer: noAnswerMessage(user.language),
+          citations: [],
+        },
+        policies: [],
+      };
+      return;
+    }
+
+    const context = answerResults
+      .map((result, index) => {
+        const snippet = stripSearchContext(result.context) || "No snippet.";
+        return `[${index + 1}] ${result.document.title}\n${snippet.slice(
+          0,
+          1200
+        )}`;
+      })
+      .join("\n\n");
+    const answerLanguage = languageNameForAnswer(user.language);
+
+    const aiResponse = await fetch(
+      `${env.AI_OPENAI_API_URL}/chat/completions`,
+      {
+        method: "POST",
+        timeout: 30000,
+        headers: {
+          Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: env.AI_OPENAI_MODEL,
+          temperature: 0.2,
+          messages: [
+            {
+              role: "system",
+              content: `Answer the user's question using only the provided document excerpts. If the excerpts do not contain enough information, say that you could not find an answer in the available documents. Include citation numbers like [1] when you use a source. Always reply in ${answerLanguage}.`,
+            },
+            {
+              role: "user",
+              content: `Question: ${query}\n\nDocument excerpts:\n${context}`,
+            },
+          ],
+        }),
+      }
+    );
+
+    if (!aiResponse.ok) {
+      Logger.warn("AI answers request failed", {
+        status: aiResponse.status,
+        statusText: aiResponse.statusText,
+      });
+      throw InvalidRequestError("AI answers request failed");
+    }
+
+    const parsed = OpenAIChatCompletionSchema.safeParse(await aiResponse.json());
+    const answer = parsed.success
+      ? parsed.data.choices[0]?.message.content?.trim()
+      : undefined;
+
+    if (!answer) {
+      throw InvalidRequestError("AI answers response was invalid");
+    }
+
+    const documents = answerResults.map((result) => result.document);
+    const citations = await Promise.all(
+      answerResults.map(async (result) => {
+        const document = await presentDocument(ctx, result.document);
+        return { ...result, document };
+      })
+    );
+
+    await SearchQuery.create({
+      userId: user.id,
+      teamId: user.teamId,
+      source: ctx.state.auth.type || "app",
+      query,
+      results: response.total,
+      answer,
+    });
+
+    ctx.body = {
+      data: {
+        answer,
+        citations,
+      },
+      policies: presentPolicies(user, documents),
+    };
+  }
+);
+
+router.post(
+  "documents.ask",
+  auth(),
+  rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
+  validate(T.DocumentsAskSchema),
+  async (ctx: APIContext<T.DocumentsAskReq>) => {
+    if (!env.AI_OPENAI_API_KEY) {
+      throw InvalidRequestError("AI answers are not configured");
+    }
+
+    const { id, query, history = [] } = ctx.input.body;
+    const { user } = ctx.state.auth;
+    const document = await Document.findByPk(id, {
+      userId: user.id,
+    });
+    authorize(user, "read", document);
+
+    const plainText = DocumentHelper.toPlainText(document).trim();
+    const content = plainText || document.text || "";
+
+    if (!content.trim()) {
+      ctx.body = {
+        data: {
+          answer:
+            user.language === "ru_RU"
+              ? "В этом документе пока нет содержимого для ответа."
+              : "This document does not have content to answer from yet.",
+        },
+      };
+      return;
+    }
+
+    const answerLanguage = languageNameForAnswer(user.language);
+    const aiResponse = await fetch(
+      `${env.AI_OPENAI_API_URL}/chat/completions`,
+      {
+        method: "POST",
+        timeout: 30000,
+        headers: {
+          Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: env.AI_OPENAI_MODEL,
+          temperature: 0.2,
+          messages: [
+            {
+              role: "system",
+              content: `You are helping the user understand a single Outline document. Answer using only the document content below. If the document does not contain enough information, say so clearly. Always reply in ${answerLanguage}. Keep answers concise unless the user asks for detail.`,
+            },
+            {
+              role: "user",
+              content: `Document title: ${document.title}\n\nDocument content:\n${content.slice(
+                0,
+                18000
+              )}`,
+            },
+            ...history.slice(-8),
+            {
+              role: "user",
+              content: query,
+            },
+          ],
+        }),
+      }
+    );
+
+    if (!aiResponse.ok) {
+      Logger.warn("Document AI chat request failed", {
+        status: aiResponse.status,
+        statusText: aiResponse.statusText,
+      });
+      throw InvalidRequestError("AI answers request failed");
+    }
+
+    const parsed = OpenAIChatCompletionSchema.safeParse(await aiResponse.json());
+    const answer = parsed.success
+      ? parsed.data.choices[0]?.message.content?.trim()
+      : undefined;
+
+    if (!answer) {
+      throw InvalidRequestError("AI answers response was invalid");
+    }
+
+    ctx.body = {
+      data: {
+        answer,
+      },
     };
   }
 );

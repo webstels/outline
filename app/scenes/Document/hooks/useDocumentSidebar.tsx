@@ -21,6 +21,9 @@ import SidebarLayout from "~/scenes/Document/components/SidebarLayout";
 const DocumentComments = lazyWithRetry(
   () => import("~/scenes/Document/components/Comments/Comments")
 );
+const DocumentAIChat = lazyWithRetry(
+  () => import("~/scenes/Document/components/AIChat")
+);
 const DocumentHistory = lazyWithRetry(
   () => import("~/scenes/Document/components/History/History")
 );
@@ -50,6 +53,7 @@ const DocumentSidebarContent = observer(function DocumentSidebarContent({
           </SidebarLayout>
         }
       >
+        {ui.rightSidebar === "ai" && <DocumentAIChat />}
         {ui.rightSidebar === "comments" && <DocumentComments />}
         {ui.rightSidebar === "history" && <DocumentHistory />}
       </React.Suspense>

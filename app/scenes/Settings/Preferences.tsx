@@ -21,11 +21,12 @@ import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
+import { changeLanguage } from "~/utils/language";
 import UserDelete from "../UserDelete";
 import SettingRow from "./components/SettingRow";
 
 function Preferences() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { ui, dialogs } = useStores();
   const user = useCurrentUser();
   const team = useCurrentTeam();
@@ -135,9 +136,10 @@ function Preferences() {
   const handleLanguageChange = React.useCallback(
     async (language: string) => {
       await user.save({ language });
+      await changeLanguage(language, i18n);
       toast.success(t("Preferences saved"));
     },
-    [t, user]
+    [i18n, t, user]
   );
 
   const handleThemeChange = React.useCallback(

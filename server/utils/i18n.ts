@@ -1,10 +1,31 @@
 import path from "node:path";
+import fs from "node:fs";
 import i18n from "i18next";
 import backend from "i18next-fs-backend";
 import { languages } from "@shared/i18n";
 import { unicodeBCP47toCLDR, unicodeCLDRtoBCP47 } from "@shared/utils/date";
 import env from "@server/env";
 import type { User } from "@server/models";
+
+const builtLocalesRoot = path.join(__dirname, "../../shared/i18n/locales");
+const sourceLocalesRoot = path.resolve(
+  __dirname,
+  "../../../shared/i18n/locales"
+);
+
+const localePath = (language: string) => {
+  const locale = unicodeBCP47toCLDR(language);
+  const builtTranslationPath = path.join(
+    builtLocalesRoot,
+    locale,
+    "translation.json"
+  );
+  const root = fs.existsSync(builtTranslationPath)
+    ? builtLocalesRoot
+    : sourceLocalesRoot;
+
+  return path.resolve(path.join(root, locale, "translation.json"));
+};
 
 /**
  * Returns i18n options for the given user or the default server language if
@@ -31,19 +52,7 @@ export async function initI18n() {
   await i18n.init({
     compatibilityJSON: "v3",
     backend: {
-      loadPath: (language: string) =>
-        path.resolve(
-          path.join(
-            __dirname,
-            "..",
-            "..",
-            "shared",
-            "i18n",
-            "locales",
-            unicodeBCP47toCLDR(language),
-            "translation.json"
-          )
-        ),
+      loadPath: localePath,
     },
     preload: languages.map(unicodeCLDRtoBCP47),
     interpolation: {

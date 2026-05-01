@@ -1,5 +1,5 @@
 import { observer } from "mobx-react";
-import { TableOfContentsIcon, EditIcon } from "outline-icons";
+import { TableOfContentsIcon, EditIcon, SparklesIcon } from "outline-icons";
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -105,6 +105,13 @@ function DocumentHeader({
 
   const handleToggle = useCallback(() => {
     ui.set({ tocVisible: !ui.tocVisible });
+  }, [ui]);
+
+  const handleToggleAI = useCallback(() => {
+    ui.set({
+      rightSidebar: ui.rightSidebar === "ai" ? null : "ai",
+      sidebarRightWidth: Math.max(ui.sidebarRightWidth, 520),
+    });
   }, [ui]);
 
   const can = usePolicy(document);
@@ -222,6 +229,20 @@ function DocumentHeader({
           {!isEditing && !isRevision && can.update && (
             <Action>
               <ShareButton document={document} />
+            </Action>
+          )}
+          {!isEditing && !isRevision && !isDeleted && (
+            <Action>
+              <Tooltip content={t("Chat with AI")} placement="bottom">
+                <Button
+                  aria-label={t("Chat with AI")}
+                  icon={<SparklesIcon />}
+                  onClick={handleToggleAI}
+                  neutral
+                >
+                  {isCompact ? null : t("AI chat")}
+                </Button>
+              </Tooltip>
             </Action>
           )}
           {isEditing && (
