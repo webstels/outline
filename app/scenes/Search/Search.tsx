@@ -1,4 +1,5 @@
 import { observer } from "mobx-react";
+import MarkdownIt from "markdown-it";
 import { v4 as uuidv4 } from "uuid";
 import queryString from "query-string";
 import * as React from "react";
@@ -49,6 +50,12 @@ import { SortInput } from "./components/SortInput";
 import UserFilter from "./components/UserFilter";
 import { HStack } from "~/components/primitives/HStack";
 import useMobile from "~/hooks/useMobile";
+
+const markdown = new MarkdownIt({
+  breaks: true,
+  html: false,
+  linkify: true,
+});
 
 function Search() {
   const { t } = useTranslation();
@@ -401,7 +408,11 @@ function Search() {
                   </Text>
                 ) : answer ? (
                   <>
-                    <AnswerText>{answer.answer}</AnswerText>
+                    <AnswerText
+                      dangerouslySetInnerHTML={{
+                        __html: markdown.render(answer.answer),
+                      }}
+                    />
                     {answer.citations.length ? (
                       <CitationList>
                         {answer.citations.map((citation, index) => (
@@ -491,8 +502,33 @@ const AnswerHeader = styled(Flex)`
 `;
 
 const AnswerText = styled(Text).attrs({ as: "p" })`
-  white-space: pre-wrap;
   margin-bottom: 12px;
+
+  > :first-child {
+    margin-top: 0;
+  }
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+
+  ul,
+  ol {
+    padding-inline-start: 20px;
+  }
+
+  code {
+    background: ${(props) => props.theme.codeBackground};
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+
+  pre {
+    background: ${(props) => props.theme.codeBackground};
+    border-radius: 8px;
+    overflow: auto;
+    padding: 10px 12px;
+  }
 `;
 
 const CitationList = styled.ol`
