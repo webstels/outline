@@ -847,6 +847,14 @@ export class Environment {
     this.toOptionalString(environment.AI_OPENAI_MODEL) ?? "gpt-4o-mini";
 
   /**
+   * Timeout for OpenAI-compatible AI answer requests in milliseconds.
+   */
+  @IsOptional()
+  @IsNumber()
+  public AI_OPENAI_TIMEOUT_MS =
+    this.toOptionalNumber(environment.AI_OPENAI_TIMEOUT_MS) ?? 90000;
+
+  /**
    * The product name
    */
   @Public

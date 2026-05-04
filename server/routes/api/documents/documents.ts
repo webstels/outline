@@ -11,7 +11,6 @@ import has from "lodash/has";
 import remove from "lodash/remove";
 import uniq from "lodash/uniq";
 import mime from "mime-types";
-import { z } from "zod";
 import type { Order, ScopeOptions, WhereOptions } from "sequelize";
 import { Op, Sequelize } from "sequelize";
 import { randomUUID } from "node:crypto";
@@ -45,6 +44,7 @@ import Logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import multipart from "@server/middlewares/multipart";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
+import timeout from "@server/middlewares/timeout";
 import { transaction } from "@server/middlewares/transaction";
 import validate from "@server/middlewares/validate";
 import {
@@ -273,6 +273,9 @@ const noAnswerMessage = (language: string | null | undefined) => {
 
   return "No matching documents were found to answer this question.";
 };
+
+const errorMessage = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
 
 router.post(
   "documents.list",
@@ -1413,6 +1416,7 @@ router.post(
   auth(),
   pagination(),
   rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
+  timeout(env.AI_OPENAI_TIMEOUT_MS + 5000),
   validate(T.DocumentsAnswerSchema),
   async (ctx: APIContext<T.DocumentsAnswerReq>) => {
     if (!env.AI_OPENAI_API_KEY) {
@@ -1484,32 +1488,46 @@ router.post(
     const context = buildSearchAnswerContext(answerResults);
     const answerLanguage = languageNameForAnswer(user.language);
 
-    const aiResponse = await fetch(
-      `${env.AI_OPENAI_API_URL}/chat/completions`,
-      {
-        method: "POST",
-        timeout: 30000,
-        headers: {
-          Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: env.AI_OPENAI_MODEL,
-          stream: false,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content: `Answer the user's question using only the provided document contents. If the documents do not contain enough information, say that you could not find an answer in the available documents. Include citation numbers like [1] when you use a source. Always reply in ${answerLanguage}.`,
-            },
-            {
-              role: "user",
-              content: `Question: ${query}\n\nDocuments:\n${context}`,
-            },
-          ],
-        }),
-      }
-    );
+    const startedAt = Date.now();
+    let aiResponse;
+
+    try {
+      aiResponse = await fetch(
+        `${env.AI_OPENAI_API_URL}/chat/completions`,
+        {
+          method: "POST",
+          timeout: env.AI_OPENAI_TIMEOUT_MS,
+          headers: {
+            Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: env.AI_OPENAI_MODEL,
+            stream: false,
+            temperature: 0.2,
+            messages: [
+              {
+                role: "system",
+                content: `Answer the user's question using only the provided document contents. If the documents do not contain enough information, say that you could not find an answer in the available documents. Include citation numbers like [1] when you use a source. Always reply in ${answerLanguage}.`,
+              },
+              {
+                role: "user",
+                content: `Question: ${query}\n\nDocuments:\n${context}`,
+              },
+            ],
+          }),
+        }
+      );
+    } catch (err) {
+      Logger.warn("AI answers network request failed", {
+        elapsedMs: Date.now() - startedAt,
+        timeoutMs: env.AI_OPENAI_TIMEOUT_MS,
+        queryLength: query.length,
+        contextLength: context.length,
+        error: errorMessage(err),
+      });
+      throw InvalidRequestError("AI answers request failed");
+    }
 
     if (!aiResponse.ok) {
       const responseText = await aiResponse.text();
@@ -1558,6 +1576,7 @@ router.post(
   "documents.ask",
   auth(),
   rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
+  timeout(env.AI_OPENAI_TIMEOUT_MS + 5000),
   validate(T.DocumentsAskSchema),
   async (ctx: APIContext<T.DocumentsAskReq>) => {
     if (!env.AI_OPENAI_API_KEY) {
@@ -1587,40 +1606,54 @@ router.post(
     }
 
     const answerLanguage = languageNameForAnswer(user.language);
-    const aiResponse = await fetch(
-      `${env.AI_OPENAI_API_URL}/chat/completions`,
-      {
-        method: "POST",
-        timeout: 30000,
-        headers: {
-          Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: env.AI_OPENAI_MODEL,
-          stream: false,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content: `You are helping the user understand a single Outline document. Answer using only the document content below. If the document does not contain enough information, say so clearly. Always reply in ${answerLanguage}. Keep answers concise unless the user asks for detail.`,
-            },
-            {
-              role: "user",
-              content: `Document title: ${document.title}\n\nDocument content:\n${content.slice(
-                0,
-                18000
-              )}`,
-            },
-            ...history.slice(-8),
-            {
-              role: "user",
-              content: query,
-            },
-          ],
-        }),
-      }
-    );
+    const documentContext = content.slice(0, 18000);
+    const startedAt = Date.now();
+    let aiResponse;
+
+    try {
+      aiResponse = await fetch(
+        `${env.AI_OPENAI_API_URL}/chat/completions`,
+        {
+          method: "POST",
+          timeout: env.AI_OPENAI_TIMEOUT_MS,
+          headers: {
+            Authorization: `Bearer ${env.AI_OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: env.AI_OPENAI_MODEL,
+            stream: false,
+            temperature: 0.2,
+            messages: [
+              {
+                role: "system",
+                content: `You are helping the user understand a single Outline document. Answer using only the document content below. If the document does not contain enough information, say so clearly. Always reply in ${answerLanguage}. Keep answers concise unless the user asks for detail.`,
+              },
+              {
+                role: "user",
+                content: `Document title: ${document.title}\n\nDocument content:\n${documentContext}`,
+              },
+              ...history.slice(-8),
+              {
+                role: "user",
+                content: query,
+              },
+            ],
+          }),
+        }
+      );
+    } catch (err) {
+      Logger.warn("Document AI chat network request failed", {
+        documentId: document.id,
+        elapsedMs: Date.now() - startedAt,
+        timeoutMs: env.AI_OPENAI_TIMEOUT_MS,
+        queryLength: query.length,
+        contextLength: documentContext.length,
+        historyLength: history.length,
+        error: errorMessage(err),
+      });
+      throw InvalidRequestError("AI answers request failed");
+    }
 
     if (!aiResponse.ok) {
       const responseText = await aiResponse.text();
