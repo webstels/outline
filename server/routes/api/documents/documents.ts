@@ -103,42 +103,76 @@ import {
 
 const router = new Router();
 
-const OpenAIChatCompletionSchema = z.object({
-  output_text: z.string().optional(),
-  choices: z
-    .object({
-      message: z
-        .object({
-          content: z.string().nullable().optional(),
-        })
-        .optional(),
-      delta: z
-        .object({
-          content: z.string().nullable().optional(),
-        })
-        .optional(),
-      text: z.string().optional(),
-    })
-    .array()
-    .optional(),
-});
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
-const extractAIContent = (payload: unknown) => {
-  const parsed = OpenAIChatCompletionSchema.safeParse(payload);
+const extractContentValue = (value: unknown): string | undefined => {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
 
-  if (!parsed.success) {
+  if (Array.isArray(value)) {
+    const content = value
+      .map((item) => extractContentValue(item) ?? "")
+      .join("")
+      .trim();
+
+    return content || undefined;
+  }
+
+  if (!isRecord(value)) {
     return;
   }
 
-  if (parsed.data.output_text?.trim()) {
-    return parsed.data.output_text.trim();
+  for (const key of ["output_text", "text", "content", "message"] as const) {
+    const content = extractContentValue(value[key]);
+
+    if (content) {
+      return content;
+    }
   }
 
-  const content = parsed.data.choices
-    ?.map(
-      (choice) =>
-        choice.message?.content ?? choice.delta?.content ?? choice.text ?? ""
-    )
+  return;
+};
+
+const extractAIContent = (payload: unknown): string | undefined => {
+  const directContent = extractContentValue(payload);
+
+  if (directContent) {
+    return directContent;
+  }
+
+  if (!isRecord(payload)) {
+    return;
+  }
+
+  for (const key of ["choices", "output", "data", "result", "response"] as const) {
+    const content = extractContentValue(payload[key]);
+
+    if (content) {
+      return content;
+    }
+  }
+
+  const choices = payload.choices;
+
+  if (!Array.isArray(choices)) {
+    return;
+  }
+
+  const content = choices
+    .map((choice) => {
+      if (!isRecord(choice)) {
+        return "";
+      }
+
+      return (
+        extractContentValue(choice.message) ??
+        extractContentValue(choice.delta) ??
+        extractContentValue(choice.text) ??
+        ""
+      );
+    })
     .join("")
     .trim();
 
@@ -153,7 +187,7 @@ const parseAIResponse = async (response: Response) => {
     return;
   }
 
-  if (trimmed.startsWith("data:")) {
+  if (trimmed.split(/\r?\n/).some((line) => line.trim().startsWith("data:"))) {
     const content = trimmed
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -162,9 +196,9 @@ const parseAIResponse = async (response: Response) => {
       .filter((line) => line && line !== "[DONE]")
       .map((line) => {
         try {
-          return extractAIContent(JSON.parse(line)) ?? "";
+          return extractAIContent(JSON.parse(line)) ?? line;
         } catch (_err) {
-          return "";
+          return line;
         }
       })
       .join("")
@@ -174,17 +208,51 @@ const parseAIResponse = async (response: Response) => {
   }
 
   try {
-    return extractAIContent(JSON.parse(trimmed));
+    return extractAIContent(JSON.parse(trimmed)) ?? trimmed;
   } catch (_err) {
-    return;
+    return trimmed;
   }
 };
 
-const stripSearchContext = (context?: string) =>
+const stripAIContext = (context?: string) =>
   context
     ?.replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+interface SearchAnswerContextResult {
+  document: Document;
+  context?: string;
+}
+
+const buildSearchAnswerContext = (results: SearchAnswerContextResult[]) => {
+  const maxTotalCharacters = 24000;
+  const maxDocumentCharacters = 6000;
+  let remainingCharacters = maxTotalCharacters;
+
+  return results
+    .map((result, index) => {
+      if (remainingCharacters <= 0) {
+        return;
+      }
+
+      const plainText = DocumentHelper.toPlainText(result.document).trim();
+      const documentContent = stripAIContext(
+        plainText || result.document.text || result.context
+      );
+      const snippet = stripAIContext(result.context);
+      const sourceContent = documentContent || snippet || "No content.";
+      const content = sourceContent.slice(
+        0,
+        Math.min(maxDocumentCharacters, remainingCharacters)
+      );
+      remainingCharacters -= content.length;
+
+      return `[${index + 1}] ${result.document.title}\n${content}`;
+    })
+    .filter((context) => !!context)
+    .join("\n\n");
+};
 
 const languageNameForAnswer = (language: string | null | undefined) => {
   switch (language) {
@@ -1413,15 +1481,7 @@ router.post(
       return;
     }
 
-    const context = answerResults
-      .map((result, index) => {
-        const snippet = stripSearchContext(result.context) || "No snippet.";
-        return `[${index + 1}] ${result.document.title}\n${snippet.slice(
-          0,
-          1200
-        )}`;
-      })
-      .join("\n\n");
+    const context = buildSearchAnswerContext(answerResults);
     const answerLanguage = languageNameForAnswer(user.language);
 
     const aiResponse = await fetch(
@@ -1440,11 +1500,11 @@ router.post(
           messages: [
             {
               role: "system",
-              content: `Answer the user's question using only the provided document excerpts. If the excerpts do not contain enough information, say that you could not find an answer in the available documents. Include citation numbers like [1] when you use a source. Always reply in ${answerLanguage}.`,
+              content: `Answer the user's question using only the provided document contents. If the documents do not contain enough information, say that you could not find an answer in the available documents. Include citation numbers like [1] when you use a source. Always reply in ${answerLanguage}.`,
             },
             {
               role: "user",
-              content: `Question: ${query}\n\nDocument excerpts:\n${context}`,
+              content: `Question: ${query}\n\nDocuments:\n${context}`,
             },
           ],
         }),
